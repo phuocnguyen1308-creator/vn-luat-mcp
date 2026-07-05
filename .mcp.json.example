@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "luat": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/USER/vn-luat-mcp", "vn-luat-mcp"],
+      "env": {
+        "PGHOST": "100.85.147.69",
+        "PGDATABASE": "appdb",
+        "PGUSER": "mcp_ro",
+        "PGPASSWORD": "doi_thanh_mat_khau_chi_doc"
+      }
+    }
+  }
+}
