@@ -22,17 +22,34 @@ def _shape(rows, offset):
             "con_nua": offset + len(rows) < total, "ket_qua": rows}
 
 
+NGUONG_DIEM = 0.05  # điểm cao nhất dưới mức này = khớp yếu/rải rác -> trả rỗng thay vì rác
+
+# Trọng số ts_rank_cd theo hạng D,C,B,A: tiêu đề (A)=1.0 áp đảo nội dung (B)=0.4
+_RANK_W = "'{0.1, 0.2, 0.4, 1.0}'"
+
+
 @mcp.tool()
-def tra_luat(tu_khoa: str, gioi_han: int = 10, offset: int = 0) -> dict:
+def tra_luat(tu_khoa: str, gioi_han: int = 10, offset: int = 0, chu_de: str = None) -> dict:
     """Tìm ĐIỀU LUẬT (luật thành văn) theo từ khóa (full-text, tìm cả khi gõ không dấu).
-    Phân trang: gioi_han tối đa 50; dùng offset để lấy trang kế (offset=10 lấy trang 2...).
-    Mẹo: câu càng NGẮN & đúng từ khóa càng chuẩn; kết quả lạc chủ đề thì thử tra_luat_theo_chu_de.
-    Trả về {tong_so, offset, so_tra, con_nua, ket_qua[...]}."""
+    Xếp hạng ƯU TIÊN khớp ở TIÊU ĐỀ; mỗi kết quả kèm 'diem' (độ liên quan).
+    chu_de (tùy chọn): tên chủ đề để thu hẹp & tăng chính xác, vd 'Dân sự'.
+    Phân trang: gioi_han tối đa 50; offset để lấy trang kế.
+    LƯU Ý: câu càng NGẮN & đúng thuật ngữ càng chuẩn. Câu dài/mô tả sẽ cho điểm thấp và
+    CÓ THỂ TRẢ RỖNG — khi đó rút gọn còn từ khóa cốt lõi (vd 'hợp đồng', 'thừa kế') hoặc thêm chu_de.
+    Trả về {tong_so, offset, so_tra, con_nua, ket_qua[...]}; hoặc rỗng kèm goi_y nếu khớp quá yếu."""
     gioi_han = max(1, min(int(gioi_han), 50))
     offset = max(0, int(offset))
+    cond, params = "", [tu_khoa, tu_khoa, tu_khoa]      # diem, headline, where
+    if chu_de:
+        cond = " AND unaccent(s.topic_title) ILIKE unaccent(%s)"
+        params.append("%" + chu_de + "%")
+    params += [gioi_han, offset]
     rows = query(f"""
         SELECT count(*) OVER() AS _total,
-               a.article_anchor, a.ma_phap_dien, a.article_title, ch.chapter_title, s.topic_title,
+               round(ts_rank_cd({_RANK_W}, a.search_vector,
+                     plainto_tsquery('simple', unaccent(%s)))::numeric, 4)::float8 AS diem,
+               a.article_anchor, a.ma_phap_dien, a.article_title,
+               left(ch.chapter_title, 140) AS chapter_title, s.topic_title,
                ts_headline('simple', left(a.content_text, 4000),
                     plainto_tsquery('simple', unaccent(%s)),
                     'StartSel=[, StopSel=], MaxFragments=1, MaxWords=25, MinWords=10') AS trich_doan,
@@ -40,10 +57,17 @@ def tra_luat(tu_khoa: str, gioi_han: int = 10, offset: int = 0) -> dict:
         FROM articles a
         LEFT JOIN chapters ch ON ch.chapter_id = a.chapter_id
         LEFT JOIN subjects s ON s.subject_id = a.subject_id
-        WHERE a.search_vector @@ plainto_tsquery('simple', unaccent(%s))
-        ORDER BY ts_rank(a.search_vector, plainto_tsquery('simple', unaccent(%s))) DESC
+        WHERE a.search_vector @@ plainto_tsquery('simple', unaccent(%s)){cond}
+        ORDER BY diem DESC
         LIMIT %s OFFSET %s
-    """, (tu_khoa, tu_khoa, tu_khoa, gioi_han, offset))
+    """, tuple(params))
+    if rows and offset == 0 and not chu_de and rows[0]["diem"] < NGUONG_DIEM:
+        total = rows[0]["_total"]
+        return {"tong_so": total, "so_tra": 0, "ket_qua": [],
+                "canh_bao": f"Khớp yếu (điểm cao nhất {rows[0]['diem']}): {total} điều chứa rải rác "
+                            "các từ nhưng không sát chủ đề.",
+                "goi_y": "Rút gọn còn thuật ngữ cốt lõi (vd 'hợp đồng', 'thừa kế'), thêm "
+                         "chu_de='Dân sự', hoặc dùng tra_luat_theo_chu_de."}
     return _shape(rows, offset)
 
 
@@ -100,9 +124,13 @@ def tra_thuat_ngu(tu: str, gioi_han: int = 15) -> list:
 
 @mcp.tool()
 def tra_luat_theo_chu_de(tu_khoa: str, chu_de: str, gioi_han: int = 10) -> list:
-    """Tìm điều luật trong PHẠM VI một chủ đề. chu_de: khớp gần đúng tên chủ đề (topic_title)."""
-    return query("""
-        SELECT a.article_anchor, a.article_title, s.topic_title,
+    """Tìm điều luật trong PHẠM VI một chủ đề (chính xác hơn tra_luat cho câu chung/dài).
+    chu_de: khớp gần đúng tên chủ đề (topic_title), vd 'Dân sự'. Mỗi kết quả kèm 'diem'."""
+    gioi_han = max(1, min(int(gioi_han), 50))
+    return query(f"""
+        SELECT a.article_anchor, a.ma_phap_dien, a.article_title, s.topic_title,
+               round(ts_rank_cd({_RANK_W}, a.search_vector,
+                     plainto_tsquery('simple', unaccent(%s)))::numeric, 4)::float8 AS diem,
                ts_headline('simple', left(a.content_text, 4000),
                     plainto_tsquery('simple', unaccent(%s)),
                     'StartSel=[, StopSel=], MaxWords=45, MinWords=18') AS trich_doan
@@ -110,9 +138,9 @@ def tra_luat_theo_chu_de(tu_khoa: str, chu_de: str, gioi_han: int = 10) -> list:
         JOIN subjects s ON s.subject_id = a.subject_id
         WHERE a.search_vector @@ plainto_tsquery('simple', unaccent(%s))
           AND unaccent(s.topic_title) ILIKE unaccent(%s)
-        ORDER BY ts_rank(a.search_vector, plainto_tsquery('simple', unaccent(%s))) DESC
+        ORDER BY diem DESC
         LIMIT %s
-    """, (tu_khoa, tu_khoa, f"%{chu_de}%", tu_khoa, gioi_han))
+    """, (tu_khoa, tu_khoa, tu_khoa, f"%{chu_de}%", gioi_han))
 
 # ─────────────────────────────── ÁN LỆ (anle) ───────────────────────────────
 
