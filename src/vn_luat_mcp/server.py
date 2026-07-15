@@ -104,7 +104,11 @@ def xem_dieu_luat(ma_dieu: str) -> dict:
         return {"canh_bao": f"Mã ứng với {len(rows)} điều — chọn anchor cụ thể rồi gọi lại:",
                 "ung_vien": [{"article_title": r["article_title"],
                               "article_anchor": r["article_anchor"]} for r in rows]}
-    return rows[0]
+    r = dict(rows[0])
+    ct = r.get("content_text") or ""
+    if len(ct) > 20000:                                  # tránh bom token với điều luật khổng lồ
+        r["content_text"] = ct[:20000] + f"\n…[điều luật dài {len(ct):,} ký tự — đã cắt; xem đầy đủ tại source_url]"
+    return r
 
 
 @mcp.tool()
@@ -146,61 +150,73 @@ def tra_luat_theo_chu_de(tu_khoa: str, chu_de: str, gioi_han: int = 10) -> list:
 
 @mcp.tool()
 def tra_an_le(tu_khoa: str, gioi_han: int = 10, offset: int = 0) -> dict:
-    """Tìm BẢN ÁN / ÁN LỆ theo từ khóa (full-text, tìm cả khi gõ không dấu).
-    Phân trang: gioi_han tối đa 50; dùng offset để lấy trang kế.
-    Trả về {tong_so, offset, so_tra, con_nua, ket_qua[...]}."""
+    """Tìm BẢN ÁN / ÁN LỆ theo từ khóa (full-text). Xếp hạng ưu tiên tiêu đề/nguyên tắc; kèm 'diem'.
+    Cũng dùng để tìm án lệ nhắc tới một luật (gõ tên luật). Phân trang: gioi_han tối đa 50, offset.
+    Câu quá mơ hồ → có thể trả rỗng + gợi ý. Trả về {tong_so, offset, so_tra, con_nua, ket_qua[...]}."""
     gioi_han = max(1, min(int(gioi_han), 50))
     offset = max(0, int(offset))
-    rows = query("""
+    rows = query(f"""
         SELECT count(*) OVER() AS _total,
+               round(ts_rank_cd({_RANK_W}, search_vector,
+                     plainto_tsquery('simple', unaccent(%s)))::numeric, 4)::float8 AS diem,
                precedent_number, title, court_level, year, case_type,
-               ts_headline('simple', coalesce(nullif(principle_text,''), left(markdown, 4000)),
+               ts_headline('simple',
+                    unaccent(regexp_replace(left(coalesce(nullif(principle_text,''), markdown), 150000),
+                             '##\\s*Page\\s*[0-9]+', ' ', 'g')),
                     plainto_tsquery('simple', unaccent(%s)),
-                    'StartSel=[, StopSel=], MaxFragments=1, MaxWords=35, MinWords=12') AS trich_doan,
-               detail_url, pdf_url
+                    'StartSel=[, StopSel=], MaxFragments=1, MaxWords=30, MinWords=12') AS trich_doan,
+               detail_url
         FROM anle_documents
         WHERE search_vector @@ plainto_tsquery('simple', unaccent(%s))
-        ORDER BY ts_rank(search_vector, plainto_tsquery('simple', unaccent(%s))) DESC
+        ORDER BY diem DESC
         LIMIT %s OFFSET %s
     """, (tu_khoa, tu_khoa, tu_khoa, gioi_han, offset))
+    if rows and offset == 0 and rows[0]["diem"] < 0.02:
+        total = rows[0]["_total"]
+        return {"tong_so": total, "so_tra": 0, "ket_qua": [],
+                "canh_bao": f"Khớp yếu (điểm cao nhất {rows[0]['diem']}).",
+                "goi_y": "Rút gọn còn từ khóa cốt lõi, hoặc lọc theo lĩnh vực bằng thong_ke."}
     return _shape(rows, offset)
 
 
 @mcp.tool()
-def xem_an_le(dinh_danh: str) -> dict:
-    """Xem toàn văn một bản án theo số án lệ (precedent_number) hoặc doc_name."""
+def xem_an_le(dinh_danh: str, day_du: bool = False) -> dict:
+    """Xem một bản án theo số án lệ (precedent_number) hoặc doc_name.
+    MẶC ĐỊNH trả metadata + trích đoạn đầu (~1500 ký tự) + link; đặt day_du=True để lấy TOÀN VĂN.
+    Nếu một số án lệ ứng NHIỀU bản án minh họa, trả danh sách để chọn bằng doc_name."""
     rows = query("""
-        SELECT precedent_number, title, court_level, year, case_type, issuing_authority,
-               adopted_date, subject, principle_text, markdown, detail_url, pdf_url,
-               applied_article_code, applied_article_number, applied_article_clause
-        FROM anle_documents WHERE precedent_number = %s OR doc_name = %s LIMIT 1
+        SELECT doc_name, precedent_number, title, court_level, year, case_type,
+               issuing_authority, adopted_date, subject, principle_text, markdown,
+               detail_url, applied_article_number
+        FROM anle_documents WHERE precedent_number = %s OR doc_name = %s
+        ORDER BY year DESC LIMIT 30
     """, (dinh_danh, dinh_danh))
-    return rows[0] if rows else {"error": "Không tìm thấy án lệ"}
+    if not rows:
+        return {"error": "Không tìm thấy án lệ", "goi_y": "Thử tra_an_le để tìm theo từ khóa."}
+    if len(rows) > 1:
+        return {"canh_bao": f"'{dinh_danh}' ứng với {len(rows)} bản án minh họa — chọn doc_name cụ thể rồi gọi lại:",
+                "ung_vien": [{"doc_name": r["doc_name"], "title": r["title"],
+                              "nam": r["year"], "toa": r["court_level"]} for r in rows]}
+    r = dict(rows[0])
+    md = r.get("markdown") or ""
+    if not day_du and len(md) > 1500:
+        r["markdown"] = md[:1500] + f"\n…[bản án dài {len(md):,} ký tự — đã cắt. Gọi lại day_du=true để xem toàn văn, hoặc mở detail_url]"
+    return r
 
 
 @mcp.tool()
-def an_le_theo_dieu_luat(applied_article_code: str, so_dieu: int = None, gioi_han: int = 20) -> list:
-    """Tìm các án lệ ÁP DỤNG một điều luật (bắc cầu án lệ ↔ luật thành văn).
-    applied_article_code: mã bộ luật/văn bản; so_dieu: số điều (tùy chọn)."""
-    if so_dieu is None:
-        return query("""SELECT precedent_number, title, court_level, year,
-                        applied_article_code, applied_article_number, applied_article_clause, detail_url
-                        FROM anle_documents WHERE applied_article_code = %s
-                        ORDER BY year DESC LIMIT %s""", (applied_article_code, gioi_han))
-    return query("""SELECT precedent_number, title, court_level, year,
-                    applied_article_code, applied_article_number, applied_article_clause, detail_url
-                    FROM anle_documents WHERE applied_article_code = %s AND applied_article_number = %s
-                    ORDER BY year DESC LIMIT %s""", (applied_article_code, so_dieu, gioi_han))
-
-
-@mcp.tool()
-def tra_cau_an_le(tu_khoa: str, gioi_han: int = 15) -> list:
-    """Tìm ở cấp CÂU trong bản án (chi tiết hơn) — trả câu khớp kèm số án lệ nguồn."""
+def tra_cau_an_le(tu_khoa: str, gioi_han: int = 15, offset: int = 0) -> dict:
+    """Tìm ở cấp CÂU trong bản án (chi tiết hơn) — full-text (nhanh), trả câu khớp kèm số án lệ nguồn.
+    Phân trang: gioi_han tối đa 50, offset. Trả về {tong_so, offset, so_tra, con_nua, ket_qua[...]}."""
     gioi_han = max(1, min(int(gioi_han), 50))
-    return query("""SELECT s.precedent_number, s.court_level, s.year, s.text
-                    FROM anle_sentences s
-                    WHERE unaccent(lower(s.text)) LIKE unaccent(lower(%s)) LIMIT %s""",
-                 (f"%{tu_khoa}%", gioi_han))
+    offset = max(0, int(offset))
+    rows = query("""
+        SELECT count(*) OVER() AS _total, s.precedent_number, s.court_level, s.year, s.text
+        FROM anle_sentences s
+        WHERE s.search_vector @@ plainto_tsquery('simple', unaccent(%s))
+        LIMIT %s OFFSET %s
+    """, (tu_khoa, gioi_han, offset))
+    return _shape(rows, offset)
 
 
 @mcp.tool()
