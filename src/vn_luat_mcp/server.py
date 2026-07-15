@@ -50,9 +50,9 @@ def tra_luat(tu_khoa: str, gioi_han: int = 10, offset: int = 0, chu_de: str = No
                      plainto_tsquery('simple', unaccent(%s)))::numeric, 4)::float8 AS diem,
                a.article_anchor, a.ma_phap_dien, a.article_title,
                left(ch.chapter_title, 140) AS chapter_title, s.topic_title,
-               ts_headline('simple', left(a.content_text, 4000),
-                    plainto_tsquery('simple', unaccent(%s)),
-                    'StartSel=[, StopSel=], MaxFragments=1, MaxWords=25, MinWords=10') AS trich_doan,
+               ts_headline('vi_unaccent', left(a.content_text, 4000),
+                    plainto_tsquery('vi_unaccent', %s),
+                    'StartSel=«, StopSel=», MaxFragments=1, MaxWords=25, MinWords=10') AS trich_doan,
                {SOURCE_URL} AS source_url
         FROM articles a
         LEFT JOIN chapters ch ON ch.chapter_id = a.chapter_id
@@ -135,9 +135,9 @@ def tra_luat_theo_chu_de(tu_khoa: str, chu_de: str, gioi_han: int = 10) -> list:
         SELECT a.article_anchor, a.ma_phap_dien, a.article_title, s.topic_title,
                round(ts_rank_cd({_RANK_W}, a.search_vector,
                      plainto_tsquery('simple', unaccent(%s)))::numeric, 4)::float8 AS diem,
-               ts_headline('simple', left(a.content_text, 4000),
-                    plainto_tsquery('simple', unaccent(%s)),
-                    'StartSel=[, StopSel=], MaxWords=45, MinWords=18') AS trich_doan
+               ts_headline('vi_unaccent', left(a.content_text, 4000),
+                    plainto_tsquery('vi_unaccent', %s),
+                    'StartSel=«, StopSel=», MaxWords=45, MinWords=18') AS trich_doan
         FROM articles a
         JOIN subjects s ON s.subject_id = a.subject_id
         WHERE a.search_vector @@ plainto_tsquery('simple', unaccent(%s))
@@ -160,11 +160,11 @@ def tra_an_le(tu_khoa: str, gioi_han: int = 10, offset: int = 0) -> dict:
                round(ts_rank_cd({_RANK_W}, search_vector,
                      plainto_tsquery('simple', unaccent(%s)))::numeric, 4)::float8 AS diem,
                precedent_number, title, court_level, year, case_type,
-               ts_headline('simple',
-                    unaccent(regexp_replace(left(coalesce(nullif(principle_text,''), markdown), 150000),
-                             '##\\s*Page\\s*[0-9]+', ' ', 'g')),
-                    plainto_tsquery('simple', unaccent(%s)),
-                    'StartSel=[, StopSel=], MaxFragments=1, MaxWords=30, MinWords=12') AS trich_doan,
+               ts_headline('vi_unaccent',
+                    regexp_replace(left(coalesce(nullif(principle_text,''), markdown), 150000),
+                             '##\\s*Page\\s*[0-9]+', ' ', 'g'),
+                    plainto_tsquery('vi_unaccent', %s),
+                    'StartSel=«, StopSel=», MaxFragments=1, MaxWords=30, MinWords=12') AS trich_doan,
                detail_url
         FROM anle_documents
         WHERE search_vector @@ plainto_tsquery('simple', unaccent(%s))
