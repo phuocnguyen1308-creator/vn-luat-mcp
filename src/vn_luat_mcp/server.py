@@ -2,6 +2,7 @@
 """MCP server "luat": tra cứu PHÁP LUẬT Việt Nam trong PostgreSQL.
 Gộp 2 nguồn: Bộ Pháp Điển (luật thành văn) + Án Lệ/bản án (toaan.gov.vn).
 Tra bằng full-text; Claude tự mở rộng từ khóa + xếp hạng để đạt hiệu quả ngữ nghĩa."""
+import re
 from mcp.server.fastmcp import FastMCP
 from .db import query
 
@@ -32,19 +33,40 @@ def tra_luat(tu_khoa: str, gioi_han: int = 10) -> list:
     """, (tu_khoa, tu_khoa, tu_khoa, gioi_han))
 
 
+# Mã pháp điển nằm trong article_title, vd "Điều 9.1.LQ.623. ..." -> "9.1.LQ.623"
+_MA_PAT = r"Điều\s+(\d+\.\d+\.[A-ZĐ]+(?:\.\d+)+)"
+
+
 @mcp.tool()
-def xem_dieu_luat(article_anchor: str) -> dict:
-    """Xem toàn văn một điều luật theo mã anchor (vd '2.2.TT.15.2')."""
-    rows = query(f"""
-        SELECT a.article_anchor, a.article_title, ch.chapter_title, s.topic_title,
-               a.content_text, a.source_note_text, a.related_note_text,
+def xem_dieu_luat(ma_dieu: str) -> dict:
+    """Xem toàn văn một điều luật. Nhận CẢ BA dạng, tự nhận diện:
+      • Mã pháp điển: '9.1.LQ.623' (hoặc có tiền tố 'Điều 9.1.LQ.623')
+      • Anchor số có dấu #: '#0900...'
+      • Anchor số không dấu #: '0900...'
+    Nếu một mã ứng với nhiều điều, trả về danh sách ứng viên kèm anchor để chọn lại."""
+    s = (ma_dieu or "").strip()
+    base = f"""
+        SELECT a.article_anchor, a.ma_phap_dien, a.article_title, ch.chapter_title,
+               s.topic_title, a.content_text, a.source_note_text, a.related_note_text,
                {SOURCE_URL} AS source_url
         FROM articles a
         LEFT JOIN chapters ch ON ch.chapter_id = a.chapter_id
         LEFT JOIN subjects s ON s.subject_id = a.subject_id
-        WHERE a.article_anchor = %s LIMIT 1
-    """, (article_anchor,))
-    return rows[0] if rows else {"error": "Không tìm thấy điều luật"}
+    """
+    digits = s.lstrip("#")
+    if digits.isdigit() and len(digits) >= 20:          # anchor số
+        rows = query(base + " WHERE a.article_anchor = %s LIMIT 5", ("#" + digits,))
+    else:                                                # mã pháp điển
+        code = re.sub(r"^\s*Điều\s+", "", s).strip().rstrip(".")
+        rows = query(base + " WHERE a.ma_phap_dien = %s LIMIT 5", (code,))
+    if not rows:
+        return {"error": "Không tìm thấy điều luật",
+                "goi_y": "Kiểm tra lại mã, hoặc dùng tra_luat để tìm theo từ khóa."}
+    if len(rows) > 1:
+        return {"canh_bao": f"Mã ứng với {len(rows)} điều — chọn anchor cụ thể rồi gọi lại:",
+                "ung_vien": [{"article_title": r["article_title"],
+                              "article_anchor": r["article_anchor"]} for r in rows]}
+    return rows[0]
 
 
 @mcp.tool()
