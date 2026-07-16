@@ -2,7 +2,7 @@
 """MCP server "luat": tra cứu PHÁP LUẬT Việt Nam trong PostgreSQL.
 Gộp 2 nguồn: Bộ Pháp Điển (luật thành văn) + Án Lệ/bản án (toaan.gov.vn).
 Tra bằng full-text; Claude tự mở rộng từ khóa + xếp hạng để đạt hiệu quả ngữ nghĩa."""
-import re
+import re, os, json, urllib.request
 from mcp.server.fastmcp import FastMCP
 from .db import query
 
@@ -277,6 +277,83 @@ def xem_an_le_ct(so: str, day_du: bool = False) -> dict:
         r["noi_dung"] = nd[:3000] + f"\n…[án lệ dài {len(nd):,} ký tự — đã cắt. Gọi day_du=true để toàn văn, hoặc mở pdf_url]"
     r["ghi_chu"] = "Nội dung từ OCR/Word — có thể có lỗi nhận dạng; đối chiếu PDF gốc khi cần chính xác."
     return r
+
+
+# ──────────────── TÌM NGỮ NGHĨA (pgvector + service nhúng trên Pi) ────────────────
+
+E5_URL = os.environ.get("E5_URL", "http://100.85.147.69:8899")
+
+def _nhung_cau_hoi(text):
+    """Gọi service nhúng trên Pi → vector 384-dim."""
+    body = json.dumps({"texts": [text], "prefix": "query"}).encode()
+    req = urllib.request.Request(E5_URL + "/embed", body, {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read())["vectors"][0]
+
+def _vstr(v):
+    return "[" + ",".join(f"{x:.6f}" for x in v) + "]"
+
+def _rrf(danh_sach, k0=60):
+    """Gộp các danh sách đã xếp hạng bằng Reciprocal Rank Fusion."""
+    diem = {}
+    for lst in danh_sach:
+        for hang, khoa in enumerate(lst):
+            diem[khoa] = diem.get(khoa, 0.0) + 1.0 / (k0 + hang)
+    return sorted(diem, key=diem.get, reverse=True)
+
+
+@mcp.tool()
+def tim_ngu_nghia(cau_hoi: str, gioi_han: int = 5) -> dict:
+    """Tìm ÁN LỆ theo NGỮ NGHĨA (semantic) — hiểu ý câu hỏi kể cả khi không trùng từ khóa.
+    Kết hợp vector (pgvector, model đa ngôn ngữ) + full-text, gộp bằng RRF.
+    Hợp khi câu hỏi MÔ TẢ tình huống đời thường (vd 'mua nhà trả góp rồi không trả được thì sao',
+    'vợ chồng trúng số chia thế nào'). Với truy vấn đúng thuật ngữ/số điều, tra_an_le_ct vẫn tốt.
+    Trả về {tong_so, ket_qua:[{so, tieu_de, do_tuong_dong, trich_doan, pdf_url}]}."""
+    gioi_han = max(1, min(int(gioi_han), 20))
+    cau_hoi = (cau_hoi or "").strip()
+    if not cau_hoi:
+        return {"error": "Câu hỏi rỗng."}
+    try:
+        vec = _vstr(_nhung_cau_hoi(cau_hoi))
+    except Exception as e:
+        return {"error": f"Không gọi được service nhúng ({e}).",
+                "goi_y": "Kiểm tra 'systemctl status embed' trên Pi, hoặc dùng tra_an_le_ct."}
+    # 1) Vector: 60 đoạn gần nhất, gom theo án lệ giữ đoạn khớp nhất
+    chunks = query("""
+        SELECT ref_id, doan, 1 - (embedding <=> %s::vector) AS sim
+        FROM doc_embeddings WHERE nguon = 'an_le'
+        ORDER BY embedding <=> %s::vector LIMIT 60
+    """, (vec, vec))
+    best = {}
+    for c in chunks:
+        if c["ref_id"] not in best or c["sim"] > best[c["ref_id"]][0]:
+            best[c["ref_id"]] = (c["sim"], c["doan"])
+    vec_order = sorted(best, key=lambda s: best[s][0], reverse=True)
+    # 2) Full-text trên toàn văn án lệ
+    fts = query(f"""
+        SELECT so, ts_rank_cd({_RANK_W}, search_vector,
+               plainto_tsquery('vi_unaccent', %s)) AS diem
+        FROM an_le_chinh_thuc
+        WHERE search_vector @@ plainto_tsquery('vi_unaccent', %s)
+        ORDER BY diem DESC LIMIT 60
+    """, (cau_hoi, cau_hoi))
+    fts_order = [r["so"] for r in fts]
+    # 3) Gộp RRF
+    final = _rrf([vec_order, fts_order])[:gioi_han]
+    if not final:
+        return {"tong_so": 0, "ket_qua": [], "goi_y": "Thử tra_an_le_ct với từ khóa cụ thể."}
+    # 4) Bổ sung tiêu đề + pdf
+    meta = {r["so"]: r for r in query(
+        "SELECT so, tieu_de, nam, pdf_url FROM an_le_chinh_thuc WHERE so = ANY(%s)", (final,))}
+    kq = []
+    for so in final:
+        m = meta.get(so, {}); sim = best.get(so, (None, None))
+        kq.append({"so": so, "nam": m.get("nam"), "tieu_de": m.get("tieu_de"),
+                   "do_tuong_dong": round(sim[0], 3) if sim[0] is not None else None,
+                   "trich_doan": (sim[1][:300] if sim[1] else None),
+                   "pdf_url": m.get("pdf_url")})
+    return {"tong_so": len(kq), "phuong_phap": "hybrid vector+FTS (RRF)", "ket_qua": kq,
+            "ghi_chu": "Nội dung án lệ từ OCR/Word — đối chiếu PDF khi cần chính xác."}
 
 
 # ─────────────────────────────── THỐNG KÊ ───────────────────────────────
