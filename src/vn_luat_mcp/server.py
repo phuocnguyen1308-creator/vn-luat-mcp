@@ -304,12 +304,20 @@ def _rrf(danh_sach, k0=60):
 
 
 @mcp.tool()
-def tim_ngu_nghia(cau_hoi: str, gioi_han: int = 5, nguon: str = "an_le") -> dict:
+def tim_ngu_nghia(cau_hoi: str, gioi_han: int = 8, nguon: str = "an_le") -> dict:
     """Tìm theo NGỮ NGHĨA (semantic) — hiểu ý câu hỏi kể cả khi không trùng từ khóa.
-    Kết hợp vector (pgvector, model đa ngôn ngữ) + full-text, gộp bằng RRF.
+    Kết hợp vector (pgvector, model đa ngôn ngữ e5-small) + full-text, gộp bằng weighted RRF.
     nguon: 'an_le' (90 án lệ chính thức, mặc định) hoặc 'dieu_luat' (điều luật thành văn).
-    Hợp khi câu hỏi MÔ TẢ tình huống đời thường (vd 'mua nhà trả góp rồi không trả được thì sao',
-    'vợ chồng trúng số chia thế nào'). Với truy vấn đúng thuật ngữ/số điều, tra_luat/tra_an_le_ct vẫn tốt.
+
+    CÁCH DÙNG TỐT NHẤT (model nhúng nhỏ nên bạn — Claude — cần hỗ trợ 2 bước):
+    1) DIỄN ĐẠT LẠI bằng THUẬT NGỮ PHÁP LÝ trước khi tra. Câu đời thường dễ bị bẫy từ vựng
+       (vd 'công ty nợ lương' → model kéo nhầm sang 'nợ công'). Hãy đổi thành thuật ngữ luật,
+       vd → 'nghĩa vụ trả lương, kỳ hạn trả lương, người sử dụng lao động chậm trả tiền lương'.
+       Nếu chưa chắc, thử vài cách diễn đạt và gộp kết quả.
+    2) LẤY RỘNG rồi TỰ LỌC: đọc 'trich_doan' của từng kết quả, GIỮ cái đúng ngữ cảnh, BỎ cái lạc đề
+       (kể cả khi do_tuong_dong cao). Mở toàn văn bằng xem_dieu_luat(ma_phap_dien) / xem_an_le_ct(so).
+
+    Với truy vấn đã đúng thuật ngữ/số điều thì tra_luat / tra_an_le_ct (FTS) thường đủ và nhanh hơn.
     Trả về {tong_so, ket_qua:[...]} — mỗi mục có do_tuong_dong, trich_doan + khóa tra cứu (so/ma_phap_dien)."""
     gioi_han = max(1, min(int(gioi_han), 20))
     cau_hoi = (cau_hoi or "").strip()
