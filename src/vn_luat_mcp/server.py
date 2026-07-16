@@ -303,57 +303,80 @@ def _rrf(danh_sach, k0=60):
 
 
 @mcp.tool()
-def tim_ngu_nghia(cau_hoi: str, gioi_han: int = 5) -> dict:
-    """Tìm ÁN LỆ theo NGỮ NGHĨA (semantic) — hiểu ý câu hỏi kể cả khi không trùng từ khóa.
+def tim_ngu_nghia(cau_hoi: str, gioi_han: int = 5, nguon: str = "an_le") -> dict:
+    """Tìm theo NGỮ NGHĨA (semantic) — hiểu ý câu hỏi kể cả khi không trùng từ khóa.
     Kết hợp vector (pgvector, model đa ngôn ngữ) + full-text, gộp bằng RRF.
+    nguon: 'an_le' (90 án lệ chính thức, mặc định) hoặc 'dieu_luat' (điều luật thành văn).
     Hợp khi câu hỏi MÔ TẢ tình huống đời thường (vd 'mua nhà trả góp rồi không trả được thì sao',
-    'vợ chồng trúng số chia thế nào'). Với truy vấn đúng thuật ngữ/số điều, tra_an_le_ct vẫn tốt.
-    Trả về {tong_so, ket_qua:[{so, tieu_de, do_tuong_dong, trich_doan, pdf_url}]}."""
+    'vợ chồng trúng số chia thế nào'). Với truy vấn đúng thuật ngữ/số điều, tra_luat/tra_an_le_ct vẫn tốt.
+    Trả về {tong_so, ket_qua:[...]} — mỗi mục có do_tuong_dong, trich_doan + khóa tra cứu (so/ma_phap_dien)."""
     gioi_han = max(1, min(int(gioi_han), 20))
     cau_hoi = (cau_hoi or "").strip()
     if not cau_hoi:
         return {"error": "Câu hỏi rỗng."}
+    if nguon not in ("an_le", "dieu_luat"):
+        return {"error": "nguon phải là 'an_le' hoặc 'dieu_luat'."}
     try:
         vec = _vstr(_nhung_cau_hoi(cau_hoi))
     except Exception as e:
         return {"error": f"Không gọi được service nhúng ({e}).",
-                "goi_y": "Kiểm tra 'systemctl status embed' trên Pi, hoặc dùng tra_an_le_ct."}
-    # 1) Vector: 60 đoạn gần nhất, gom theo án lệ giữ đoạn khớp nhất
+                "goi_y": "Kiểm tra 'systemctl status embed' trên Pi, hoặc dùng tra_luat/tra_an_le_ct."}
+    # 1) Vector: 60 đoạn gần nhất, gom theo tài liệu giữ đoạn khớp nhất
     chunks = query("""
         SELECT ref_id, doan, 1 - (embedding <=> %s::vector) AS sim
-        FROM doc_embeddings WHERE nguon = 'an_le'
+        FROM doc_embeddings WHERE nguon = %s
         ORDER BY embedding <=> %s::vector LIMIT 60
-    """, (vec, vec))
+    """, (vec, nguon, vec))
+    if not chunks:
+        return {"tong_so": 0, "ket_qua": [],
+                "goi_y": f"Chưa có vector cho nguon='{nguon}' (có thể đang nhúng). Dùng tra_luat/tra_an_le_ct."}
     best = {}
     for c in chunks:
         if c["ref_id"] not in best or c["sim"] > best[c["ref_id"]][0]:
             best[c["ref_id"]] = (c["sim"], c["doan"])
     vec_order = sorted(best, key=lambda s: best[s][0], reverse=True)
-    # 2) Full-text trên toàn văn án lệ
-    fts = query(f"""
-        SELECT so, ts_rank_cd({_RANK_W}, search_vector,
-               plainto_tsquery('vi_unaccent', %s)) AS diem
-        FROM an_le_chinh_thuc
-        WHERE search_vector @@ plainto_tsquery('vi_unaccent', %s)
-        ORDER BY diem DESC LIMIT 60
-    """, (cau_hoi, cau_hoi))
-    fts_order = [r["so"] for r in fts]
-    # 3) Gộp RRF
-    final = _rrf([vec_order, fts_order])[:gioi_han]
+    # 2) Full-text + 3) RRF + 4) bổ sung metadata — tùy nguồn
+    if nguon == "an_le":
+        fts = query(f"""SELECT so AS k, ts_rank_cd({_RANK_W}, search_vector,
+                        plainto_tsquery('vi_unaccent', %s)) AS diem
+                        FROM an_le_chinh_thuc
+                        WHERE search_vector @@ plainto_tsquery('vi_unaccent', %s)
+                        ORDER BY diem DESC LIMIT 60""", (cau_hoi, cau_hoi))
+        final = _rrf([vec_order, [r["k"] for r in fts]])[:gioi_han]
+        meta = {r["so"]: r for r in query(
+            "SELECT so, tieu_de, nam, pdf_url FROM an_le_chinh_thuc WHERE so = ANY(%s)", (final,))}
+        kq = []
+        for k in final:
+            m = meta.get(k, {}); sim = best.get(k, (None, None))
+            kq.append({"so": k, "nam": m.get("nam"), "tieu_de": m.get("tieu_de"),
+                       "do_tuong_dong": round(sim[0], 3) if sim[0] is not None else None,
+                       "trich_doan": (sim[1][:300] if sim[1] else None), "pdf_url": m.get("pdf_url")})
+        ghi_chu = "Án lệ; nội dung từ OCR/Word — đối chiếu PDF khi cần chính xác."
+    else:  # dieu_luat
+        fts = query(f"""SELECT a.article_anchor AS k,
+                        ts_rank_cd({_RANK_W}, a.search_vector,
+                        plainto_tsquery('simple', unaccent(%s))) AS diem
+                        FROM articles a
+                        WHERE a.search_vector @@ plainto_tsquery('simple', unaccent(%s))
+                        ORDER BY diem DESC LIMIT 60""", (cau_hoi, cau_hoi))
+        final = _rrf([vec_order, [r["k"] for r in fts]])[:gioi_han]
+        meta = {r["article_anchor"]: r for r in query(f"""
+            SELECT a.article_anchor, a.ma_phap_dien, a.article_title, s.topic_title,
+                   {SOURCE_URL} AS source_url
+            FROM articles a LEFT JOIN subjects s ON s.subject_id = a.subject_id
+            WHERE a.article_anchor = ANY(%s)""", (final,))}
+        kq = []
+        for k in final:
+            m = meta.get(k, {}); sim = best.get(k, (None, None))
+            kq.append({"ma_phap_dien": m.get("ma_phap_dien"), "tieu_de": m.get("article_title"),
+                       "chu_de": m.get("topic_title"),
+                       "do_tuong_dong": round(sim[0], 3) if sim[0] is not None else None,
+                       "trich_doan": (sim[1][:300] if sim[1] else None), "source_url": m.get("source_url")})
+        ghi_chu = "Điều luật thành văn; mở toàn văn bằng xem_dieu_luat(ma_phap_dien)."
     if not final:
-        return {"tong_so": 0, "ket_qua": [], "goi_y": "Thử tra_an_le_ct với từ khóa cụ thể."}
-    # 4) Bổ sung tiêu đề + pdf
-    meta = {r["so"]: r for r in query(
-        "SELECT so, tieu_de, nam, pdf_url FROM an_le_chinh_thuc WHERE so = ANY(%s)", (final,))}
-    kq = []
-    for so in final:
-        m = meta.get(so, {}); sim = best.get(so, (None, None))
-        kq.append({"so": so, "nam": m.get("nam"), "tieu_de": m.get("tieu_de"),
-                   "do_tuong_dong": round(sim[0], 3) if sim[0] is not None else None,
-                   "trich_doan": (sim[1][:300] if sim[1] else None),
-                   "pdf_url": m.get("pdf_url")})
-    return {"tong_so": len(kq), "phuong_phap": "hybrid vector+FTS (RRF)", "ket_qua": kq,
-            "ghi_chu": "Nội dung án lệ từ OCR/Word — đối chiếu PDF khi cần chính xác."}
+        return {"tong_so": 0, "ket_qua": [], "goi_y": "Thử tra_luat/tra_an_le_ct với từ khóa cụ thể."}
+    return {"tong_so": len(kq), "nguon": nguon, "phuong_phap": "hybrid vector+FTS (RRF)",
+            "ket_qua": kq, "ghi_chu": ghi_chu}
 
 
 # ─────────────────────────────── THỐNG KÊ ───────────────────────────────
