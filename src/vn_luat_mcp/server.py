@@ -294,11 +294,12 @@ def _vstr(v):
     return "[" + ",".join(f"{x:.6f}" for x in v) + "]"
 
 def _rrf(danh_sach, k0=60):
-    """Gộp các danh sách đã xếp hạng bằng Reciprocal Rank Fusion."""
+    """Weighted Reciprocal Rank Fusion. danh_sach: list các (danh_sách_khóa, trọng_số).
+    Vector nên có trọng số cao hơn FTS để câu mô tả không bị FTS kéo mục nhiễu lên."""
     diem = {}
-    for lst in danh_sach:
+    for lst, w in danh_sach:
         for hang, khoa in enumerate(lst):
-            diem[khoa] = diem.get(khoa, 0.0) + 1.0 / (k0 + hang)
+            diem[khoa] = diem.get(khoa, 0.0) + w / (k0 + hang)
     return sorted(diem, key=diem.get, reverse=True)
 
 
@@ -342,7 +343,7 @@ def tim_ngu_nghia(cau_hoi: str, gioi_han: int = 5, nguon: str = "an_le") -> dict
                         FROM an_le_chinh_thuc
                         WHERE search_vector @@ plainto_tsquery('vi_unaccent', %s)
                         ORDER BY diem DESC LIMIT 60""", (cau_hoi, cau_hoi))
-        final = _rrf([vec_order, [r["k"] for r in fts]])[:gioi_han]
+        final = _rrf([(vec_order, 1.0), ([r["k"] for r in fts][:25], 0.5)])[:gioi_han]
         meta = {r["so"]: r for r in query(
             "SELECT so, tieu_de, nam, pdf_url FROM an_le_chinh_thuc WHERE so = ANY(%s)", (final,))}
         kq = []
@@ -359,7 +360,7 @@ def tim_ngu_nghia(cau_hoi: str, gioi_han: int = 5, nguon: str = "an_le") -> dict
                         FROM articles a
                         WHERE a.search_vector @@ plainto_tsquery('simple', unaccent(%s))
                         ORDER BY diem DESC LIMIT 60""", (cau_hoi, cau_hoi))
-        final = _rrf([vec_order, [r["k"] for r in fts]])[:gioi_han]
+        final = _rrf([(vec_order, 1.0), ([r["k"] for r in fts][:25], 0.5)])[:gioi_han]
         meta = {r["article_anchor"]: r for r in query(f"""
             SELECT a.article_anchor, a.ma_phap_dien, a.article_title, s.topic_title,
                    {SOURCE_URL} AS source_url
