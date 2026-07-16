@@ -220,18 +220,63 @@ def tra_cau_an_le(tu_khoa: str, gioi_han: int = 15, offset: int = 0) -> dict:
 
 
 @mcp.tool()
-def liet_ke_an_le() -> dict:
-    """Liệt kê các ÁN LỆ CHÍNH THỨC được tham chiếu trong kho (kèm số bản án minh họa & khoảng năm).
-    LƯU Ý: kho chỉ chứa 19 trong số ~70+ án lệ chính thức của VN, và KHÔNG theo dõi trạng thái
-    hiệu lực — phải kiểm tra lại trên toaan.gov.vn trước khi viện dẫn."""
-    rows = query("""SELECT precedent_number AS an_le, count(*) AS so_ban_an,
-                    min(year) AS nam_som, max(year) AS nam_moi
-                    FROM anle_documents
-                    WHERE precedent_number IS NOT NULL AND precedent_number <> ''
-                    GROUP BY precedent_number ORDER BY precedent_number""")
-    return {"canh_bao": "Chỉ 19/≈70+ án lệ chính thức có trong kho; CHƯA theo dõi hiệu lực — "
-                        "kiểm tra toaan.gov.vn trước khi viện dẫn.",
-            "so_an_le": len(rows), "ket_qua": rows}
+def liet_ke_an_le(nam: int = None, gioi_han: int = 100) -> dict:
+    """Liệt kê 90 ÁN LỆ CHÍNH THỨC của Việt Nam (số + tiêu đề + năm + số bản án minh họa trong kho).
+    Lọc theo năm nếu cần. Toàn văn: xem_an_le_ct; tìm theo từ khóa: tra_an_le_ct."""
+    cond, params = "", []
+    if nam:
+        cond = " WHERE ct.nam = %s"; params.append(int(nam))
+    params.append(min(int(gioi_han), 100))
+    rows = query(f"""
+        SELECT ct.so, ct.nam, ct.tieu_de,
+               (SELECT count(*) FROM anle_documents d
+                WHERE d.precedent_number = 'Án lệ số ' || ct.so) AS so_ban_an_minh_hoa
+        FROM an_le_chinh_thuc ct{cond}
+        ORDER BY ct.so_thu_tu DESC LIMIT %s""", tuple(params))
+    return {"tong_so": len(rows),
+            "ghi_chu": "90 án lệ chính thức. Nội dung từ OCR/Word — đối chiếu PDF gốc khi cần chính xác.",
+            "ket_qua": rows}
+
+
+@mcp.tool()
+def tra_an_le_ct(tu_khoa: str, gioi_han: int = 10, offset: int = 0) -> dict:
+    """Tìm trong 90 ÁN LỆ CHÍNH THỨC theo từ khóa (full-text nội dung + tiêu đề, giữ dấu, khớp cả không dấu).
+    Trả về số, tiêu đề, năm, trích đoạn, link PDF, 'diem'. Phân trang gioi_han≤50, offset.
+    Câu quá mơ hồ → có thể trả rỗng + gợi ý."""
+    gioi_han = max(1, min(int(gioi_han), 50)); offset = max(0, int(offset))
+    rows = query(f"""
+        SELECT count(*) OVER() AS _total,
+               round(ts_rank_cd({_RANK_W}, search_vector,
+                     plainto_tsquery('vi_unaccent', %s))::numeric, 4)::float8 AS diem,
+               so, nam, tieu_de,
+               ts_headline('vi_unaccent', left(noi_dung, 200000),
+                    plainto_tsquery('vi_unaccent', %s),
+                    'StartSel=«, StopSel=», MaxFragments=2, MaxWords=30, MinWords=12') AS trich_doan,
+               pdf_url
+        FROM an_le_chinh_thuc
+        WHERE search_vector @@ plainto_tsquery('vi_unaccent', %s)
+        ORDER BY diem DESC LIMIT %s OFFSET %s
+    """, (tu_khoa, tu_khoa, tu_khoa, gioi_han, offset))
+    if rows and offset == 0 and rows[0]["diem"] < 0.02:
+        return {"tong_so": rows[0]["_total"], "so_tra": 0, "ket_qua": [],
+                "goi_y": "Khớp yếu — rút gọn còn từ khóa cốt lõi, hoặc dùng liet_ke_an_le."}
+    return _shape(rows, offset)
+
+
+@mcp.tool()
+def xem_an_le_ct(so: str, day_du: bool = False) -> dict:
+    """Xem một ÁN LỆ CHÍNH THỨC theo số (vd '03/2016/AL' hoặc 'Án lệ số 03/2016/AL').
+    Mặc định trả tiêu đề + ~3000 ký tự đầu + link PDF; day_du=True để lấy TOÀN VĂN."""
+    s = re.sub(r"^\s*[Áá]n\s*lệ\s*số\s*", "", (so or "").strip())
+    rows = query("SELECT so, nam, tieu_de, noi_dung, pdf_url FROM an_le_chinh_thuc WHERE so = %s", (s,))
+    if not rows:
+        return {"error": "Không tìm thấy án lệ",
+                "goi_y": "Dùng liet_ke_an_le xem danh sách, hoặc tra_an_le_ct tìm theo từ khóa."}
+    r = dict(rows[0]); nd = r.get("noi_dung") or ""
+    if not day_du and len(nd) > 3000:
+        r["noi_dung"] = nd[:3000] + f"\n…[án lệ dài {len(nd):,} ký tự — đã cắt. Gọi day_du=true để toàn văn, hoặc mở pdf_url]"
+    r["ghi_chu"] = "Nội dung từ OCR/Word — có thể có lỗi nhận dạng; đối chiếu PDF gốc khi cần chính xác."
+    return r
 
 
 # ─────────────────────────────── THỐNG KÊ ───────────────────────────────
@@ -262,10 +307,9 @@ def thong_ke(loai: str = "tong_quan", nhom_theo: str = None) -> dict:
     dl = query("SELECT count(*) AS c FROM articles")[0]["c"]
     cd = query("SELECT count(DISTINCT topic_title) AS c FROM subjects")[0]["c"]
     ba = query("SELECT count(*) AS c FROM anle_documents")[0]["c"]
-    al = query("SELECT count(DISTINCT precedent_number) AS c FROM anle_documents "
-               "WHERE precedent_number <> ''")[0]["c"]
+    al = query("SELECT count(*) AS c FROM an_le_chinh_thuc")[0]["c"]
     return {"dieu_luat": dl, "chu_de": cd, "ban_an": ba, "an_le_chinh_thuc": al,
-            "ghi_chu": "Kho án lệ chủ yếu là BẢN ÁN; chỉ 19 án lệ chính thức được tham chiếu."}
+            "ghi_chu": "an_le_chinh_thuc = toàn văn 90 án lệ chính thức; ban_an = bản án minh họa."}
 
 
 def main():
