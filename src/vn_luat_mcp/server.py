@@ -381,8 +381,103 @@ def thong_ke(loai: str = "tong_quan", nhom_theo: str = None) -> dict:
     cd = query("SELECT count(DISTINCT topic_title) AS c FROM subjects")[0]["c"]
     ba = query("SELECT count(*) AS c FROM anle_documents")[0]["c"]
     al = query("SELECT count(*) AS c FROM an_le_chinh_thuc")[0]["c"]
+    try:
+        vb = query("SELECT count(*) AS c FROM van_ban WHERE toan_van IS NOT NULL")[0]["c"]
+    except Exception:
+        vb = 0
     return {"dieu_luat": dl, "chu_de": cd, "ban_an": ba, "an_le_chinh_thuc": al,
-            "ghi_chu": "an_le_chinh_thuc = toàn văn 90 án lệ chính thức; ban_an = bản án minh họa."}
+            "van_ban_goc": vb,
+            "ghi_chu": "an_le_chinh_thuc = 90 án lệ chính thức; ban_an = bản án minh họa; "
+                       "van_ban_goc = văn bản gốc toàn văn từ Công báo."}
+
+
+# ──────────── KHO VĂN BẢN GỐC (Công báo Chính phủ) ────────────
+
+def _norm_sh(s):
+    return re.sub(r"\s+", "", (s or "").strip()).upper().replace("Đ", "D")
+
+@mcp.tool()
+def nguon_cua_dieu(ma_phap_dien: str) -> dict:
+    """Từ MỘT ĐIỀU pháp điển → VĂN BẢN GỐC + điều gốc + TRÍCH DẪN CHUẨN + tình trạng sửa đổi.
+    Dùng khi cần dẫn nguồn đúng chuẩn (vd 'Điều 385 Bộ luật số 91/2015/QH13') thay vì mã pháp điển,
+    hoặc kiểm tra điều đã bị sửa đổi chưa và bởi văn bản nào.
+    Nhận mã pháp điển (vd '9.1.LQ.385'). Mã ứng nhiều điều → trả danh sách."""
+    ma = re.sub(r"^\s*Điều\s+", "", (ma_phap_dien or "").strip()).rstrip(".")
+    rows = query("""
+        SELECT g.article_id, g.so_hieu_goc, g.dieu_goc, g.loai_vb, g.ngay_hieu_luc, g.co_sua_doi,
+               v.ten_van_ban, v.co_quan_ban_hanh, v.ngay_hieu_luc AS vb_hl, (v.so_hieu IS NOT NULL) AS co_kho
+        FROM vb_goc_map g
+        LEFT JOIN van_ban v ON v.so_hieu = translate(upper(g.so_hieu_goc),'Đ','D')
+        WHERE g.ma_phap_dien = %s ORDER BY g.dieu_goc""", (ma,))
+    if not rows:
+        return {"error": "Không tìm thấy nguồn cho mã này",
+                "goi_y": "Kiểm tra mã (vd '9.1.LQ.385'), hoặc dùng xem_dieu_luat."}
+    def build(r):
+        out = {"trich_dan": f"Điều {r['dieu_goc']} {r['loai_vb'] or 'Văn bản'} số {r['so_hieu_goc']}",
+               "so_hieu_goc": r["so_hieu_goc"], "dieu_goc": r["dieu_goc"], "loai_vb": r["loai_vb"],
+               "ten_van_ban": r["ten_van_ban"], "co_quan_ban_hanh": r["co_quan_ban_hanh"],
+               "ngay_hieu_luc": str(r["vb_hl"] or r["ngay_hieu_luc"] or "") or None,
+               "da_bi_sua_doi": r["co_sua_doi"], "co_toan_van_trong_kho": r["co_kho"]}
+        if r["co_sua_doi"]:
+            sd = query("""SELECT so_hieu_sua, dieu_sua FROM vb_sua_doi WHERE article_id=%s""", (r["article_id"],))
+            out["sua_doi_boi"] = [f"Điều {x['dieu_sua']} văn bản số {x['so_hieu_sua']}" for x in sd]
+            out["canh_bao"] = "Điều này đã bị sửa đổi/bổ sung — đối chiếu văn bản sửa đổi khi trích dẫn."
+        out["xem" if r["co_kho"] else "ghi_chu"] = (
+            f"xem_van_ban_goc('{r['so_hieu_goc']}')" if r["co_kho"]
+            else "Chưa có toàn văn trong kho (văn bản cũ/không trên Công báo) — tra vbpl.vn.")
+        return out
+    return build(rows[0]) if len(rows) == 1 else {
+        "canh_bao": f"Mã ứng với {len(rows)} điều gốc:", "ket_qua": [build(r) for r in rows]}
+
+
+@mcp.tool()
+def xem_van_ban_goc(so_hieu: str, day_du: bool = False) -> dict:
+    """Xem VĂN BẢN GỐC theo số hiệu (vd '91/2015/QH13', '155/2020/NĐ-CP'): metadata chính thức
+    (cơ quan ban hành, ngày ban hành/hiệu lực, người ký) + TOÀN VĂN từ Công báo Chính phủ.
+    Mặc định cắt ~15.000 ký tự; day_du=True lấy trọn."""
+    rows = query("""SELECT so_hieu, loai_vb, ten_van_ban, co_quan_ban_hanh, nguoi_ky,
+                    ngay_ban_hanh, ngay_hieu_luc, so_cong_bao, url_congbao, trich_xuat, toan_van
+                    FROM van_ban WHERE translate(upper(so_hieu),'Đ','D') = %s""", (_norm_sh(so_hieu),))
+    if not rows:
+        return {"error": "Không có văn bản này trong kho",
+                "goi_y": "Kho gồm ~3.250 văn bản từ Công báo (2010+). Văn bản cũ hơn: tra vbpl.vn hoặc nguon_cua_dieu."}
+    r = dict(rows[0]); tv = r.get("toan_van") or ""
+    r["ngay_ban_hanh"] = str(r["ngay_ban_hanh"]) if r["ngay_ban_hanh"] else None
+    r["ngay_hieu_luc"] = str(r["ngay_hieu_luc"]) if r["ngay_hieu_luc"] else None
+    if r.get("trich_xuat") == "ocr_can":
+        r["ghi_chu"] = "Văn bản này là PDF scan chưa OCR — chỉ có metadata; mở url_congbao để đọc."
+    elif not day_du and len(tv) > 15000:
+        r["toan_van"] = tv[:15000] + f"\n…[dài {len(tv):,} ký tự — day_du=true để toàn văn, hoặc mở url_congbao]"
+    r["nguon"] = "Công báo Chính phủ (congbao.chinhphu.vn)"
+    return r
+
+
+@mcp.tool()
+def tra_van_ban(tu_khoa: str, gioi_han: int = 10, offset: int = 0, loai: str = None) -> dict:
+    """Tìm trong TOÀN VĂN văn bản gốc (Công báo). Chạm được phần pháp điển LƯỢC BỎ:
+    căn cứ ban hành, lời nói đầu, phụ lục, biểu mẫu, điều khoản chuyển tiếp/thi hành.
+    loai (tùy chọn): lọc theo loại vd 'Nghị định', 'Thông tư', 'Luật'.
+    Khác tra_luat (tra điều đã pháp điển hóa) — dùng khi cần bản gốc đầy đủ."""
+    gioi_han = max(1, min(int(gioi_han), 50)); offset = max(0, int(offset))
+    cond, params = "", [tu_khoa, tu_khoa, tu_khoa]
+    if loai:
+        cond = " AND unaccent(loai_vb) ILIKE unaccent(%s)"; params.append("%" + loai + "%")
+    params += [gioi_han, offset]
+    rows = query(f"""
+        SELECT count(*) OVER() AS _total,
+               round(ts_rank_cd({_RANK_W}, search_vector,
+                     plainto_tsquery('vi_unaccent', %s))::numeric, 4)::float8 AS diem,
+               so_hieu, loai_vb, ten_van_ban, co_quan_ban_hanh, ngay_hieu_luc::text AS ngay_hieu_luc,
+               ts_headline('vi_unaccent', left(coalesce(toan_van,''), 400000),
+                    plainto_tsquery('vi_unaccent', %s),
+                    'StartSel=«, StopSel=», MaxFragments=2, MaxWords=30, MinWords=12') AS trich_doan
+        FROM van_ban
+        WHERE search_vector @@ plainto_tsquery('vi_unaccent', %s){cond}
+        ORDER BY diem DESC LIMIT %s OFFSET %s""", tuple(params))
+    if rows and offset == 0 and rows[0]["diem"] < NGUONG_DIEM:
+        return {"tong_so": rows[0]["_total"], "so_tra": 0, "ket_qua": [],
+                "goi_y": "Khớp yếu — rút gọn còn từ khóa cốt lõi, hoặc lọc bằng loai='Nghị định'."}
+    return _shape(rows, offset)
 
 
 def main():
