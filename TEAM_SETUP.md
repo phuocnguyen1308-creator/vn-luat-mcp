@@ -57,12 +57,23 @@ winget install astral-sh.uv
 Cài xong **đóng và mở lại PowerShell**, rồi kiểm tra:
 
 ```powershell
-uvx --version
-where.exe uvx
+uv --version
 ```
 
-Ghi lại đường dẫn mà `where.exe uvx` in ra (thường là
-`C:\Users\<TEN_CUA_BAN>\.local\bin\uvx.exe`) — bước 3 cần dùng.
+### Cài MCP (một lần duy nhất)
+
+```powershell
+uv tool install --python 3.12 git+https://github.com/phuocnguyen1308-creator/vn-luat-mcp
+where.exe vn-luat-mcp
+```
+
+Lệnh cuối in ra đường dẫn — thường là `C:\Users\<TEN_CUA_BAN>\.local\bin\vn-luat-mcp.exe`.
+**Ghi lại đường dẫn này**, bước 3 cần dùng.
+
+> **Vì sao cài cố định thay vì để `uvx` tải mỗi lần?** Cách `uvx --from git+...` tải lại mã nguồn
+> từ GitHub mỗi lần Claude khởi động — trên Windows rất hay dính lỗi khóa file cache
+> (`os error 32`). Cài một lần thì chạy thẳng, ổn định và khởi động nhanh hơn.
+> Khi có bản cập nhật, chạy: `uv tool upgrade vn-luat-mcp`
 
 ---
 
@@ -76,19 +87,15 @@ Ghi lại đường dẫn mà `where.exe uvx` in ra (thường là
 
 2. Mở `claude_desktop_config.json` bằng Notepad. *Nếu chưa có*, tạo file mới đúng tên đó.
 
-3. Dán nội dung dưới đây. **Thay 3 chỗ**: đường dẫn `uvx.exe` (bước 2), `TEN_TAI_KHOAN_CUA_BAN`
-   và `MAT_KHAU_DUOC_CAP` (quản trị gửi).
+3. Dán nội dung dưới đây. **Thay 3 chỗ**: đường dẫn `vn-luat-mcp.exe` (bước 2),
+   `TEN_TAI_KHOAN_CUA_BAN` và `MAT_KHAU_DUOC_CAP` (quản trị gửi).
 
 ```json
 {
   "mcpServers": {
     "luat": {
-      "command": "C:\\Users\\TEN_CUA_BAN\\.local\\bin\\uvx.exe",
-      "args": [
-        "--from",
-        "git+https://github.com/phuocnguyen1308-creator/vn-luat-mcp",
-        "vn-luat-mcp"
-      ],
+      "command": "C:\\Users\\TEN_CUA_BAN\\.local\\bin\\vn-luat-mcp.exe",
+      "args": [],
       "env": {
         "PGHOST": "100.85.147.69",
         "PGPORT": "5432",
@@ -184,7 +191,9 @@ khen thưởng 2022 + nghị định + thông tư hướng dẫn.
 | **password authentication failed** | Sai `PGUSER` hoặc `PGPASSWORD` — kiểm lại tên tài khoản quản trị cấp (không phải `mcp_ro`). Sửa xong phải **thoát hẳn** Claude rồi mở lại. |
 | **connection refused / no pg_hba entry** | Máy chủ chưa cho phép IP của bạn — báo quản trị mở `pg_hba.conf` cho dải Tailscale. |
 | `tim_ngu_nghia` báo không gọi được service nhúng | Dịch vụ tìm-theo-nghĩa trên máy chủ đang tắt. Báo quản trị; các tool khác vẫn dùng bình thường. |
-| Lần đầu chạy hơi lâu | `uvx` đang tải mã nguồn từ GitHub — bình thường, lần sau nhanh. |
+| Log báo `Missing expected target directory for Python minor version link` | Thư mục Python của `uv` hỏng. Chạy: `uv cache clean` rồi `uv python install 3.12`, sau đó cài lại MCP. **Đừng** đặt `UV_PYTHON_INSTALL_DIR` trỏ vào gốc ổ `C:\` — không đủ quyền ghi. |
+| Log báo `failed to remove directory ... (os error 32)` | File bị khóa bởi tiến trình cũ. Thoát hẳn Claude, rồi `Get-Process uv,uvx,python \| Stop-Process -Force`, `uv cache clean`, cài lại. Nếu tái diễn → phần mềm diệt virus đang quét; thêm ngoại lệ cho `%LOCALAPPDATA%\uv` và `%APPDATA%\uv`. |
+| **Failed to start Claude's workspace / VM service not running** | **Không liên quan MCP này** — đó là máy ảo riêng của Claude cho việc chạy code. Tra cứu luật vẫn hoạt động bình thường. Muốn sửa: khởi động lại máy; kiểm tra **Virtualization = Enabled** trong Task Manager → Performance → CPU; hoặc `wsl --install` + `wsl --update`. |
 
 **Bảo mật:** mật khẩu nằm trong file cấu hình dạng văn bản thường. Đừng chia sẻ file này hoặc
 chụp màn hình có mật khẩu. Tài khoản của bạn chỉ **đọc được dữ liệu luật** — không đọc được
