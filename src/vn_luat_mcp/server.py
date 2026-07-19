@@ -396,6 +396,11 @@ def thong_ke(loai: str = "tong_quan", nhom_theo: str = None) -> dict:
 def _norm_sh(s):
     return re.sub(r"\s+", "", (s or "").strip()).upper().replace("Đ", "D")
 
+# Số hiệu KHÔNG duy nhất (Luật 91/2015/QH13 = BLDS vs Nghị quyết 91/2015/QH13) →
+# phải khớp thêm LOẠI. Chuẩn hóa loại phía pháp điển cho khớp van_ban.loai_chuan.
+_CANON_LOAI = ("CASE WHEN lower(unaccent(g.loai_vb)) LIKE 'bo luat%%' THEN 'luat' "
+               "ELSE lower(unaccent(g.loai_vb)) END")
+
 @mcp.tool()
 def nguon_cua_dieu(ma_phap_dien: str) -> dict:
     """Từ MỘT ĐIỀU pháp điển → VĂN BẢN GỐC + điều gốc + TRÍCH DẪN CHUẨN + tình trạng sửa đổi.
@@ -403,19 +408,25 @@ def nguon_cua_dieu(ma_phap_dien: str) -> dict:
     hoặc kiểm tra điều đã bị sửa đổi chưa và bởi văn bản nào.
     Nhận mã pháp điển (vd '9.1.LQ.385'). Mã ứng nhiều điều → trả danh sách."""
     ma = re.sub(r"^\s*Điều\s+", "", (ma_phap_dien or "").strip()).rstrip(".")
-    rows = query("""
+    rows = query(f"""
         SELECT g.article_id, g.so_hieu_goc, g.dieu_goc, g.loai_vb, g.ngay_hieu_luc, g.co_sua_doi,
-               v.ten_van_ban, v.co_quan_ban_hanh, v.ngay_hieu_luc AS vb_hl, (v.so_hieu IS NOT NULL) AS co_kho
+               v.ten_van_ban, v.co_quan_ban_hanh, v.nguoi_ky, v.ngay_hieu_luc AS vb_hl,
+               (v.so_hieu IS NOT NULL) AS co_kho
         FROM vb_goc_map g
         LEFT JOIN van_ban v ON v.so_hieu = translate(upper(g.so_hieu_goc),'Đ','D')
+                           AND v.loai_chuan = {_CANON_LOAI}
         WHERE g.ma_phap_dien = %s ORDER BY g.dieu_goc""", (ma,))
     if not rows:
         return {"error": "Không tìm thấy nguồn cho mã này",
                 "goi_y": "Kiểm tra mã (vd '9.1.LQ.385'), hoặc dùng xem_dieu_luat."}
     def build(r):
-        out = {"trich_dan": f"Điều {r['dieu_goc']} {r['loai_vb'] or 'Văn bản'} số {r['so_hieu_goc']}",
+        ten = (r.get("ten_van_ban") or "").strip().rstrip(".")
+        td = (f"Điều {r['dieu_goc']} {ten} (số {r['so_hieu_goc']})" if ten
+              else f"Điều {r['dieu_goc']} {r['loai_vb'] or 'Văn bản'} số {r['so_hieu_goc']}")
+        out = {"trich_dan": td,
                "so_hieu_goc": r["so_hieu_goc"], "dieu_goc": r["dieu_goc"], "loai_vb": r["loai_vb"],
                "ten_van_ban": r["ten_van_ban"], "co_quan_ban_hanh": r["co_quan_ban_hanh"],
+               "nguoi_ky": r.get("nguoi_ky"),
                "ngay_hieu_luc": str(r["vb_hl"] or r["ngay_hieu_luc"] or "") or None,
                "da_bi_sua_doi": r["co_sua_doi"], "co_toan_van_trong_kho": r["co_kho"]}
         if r["co_sua_doi"]:
@@ -431,13 +442,23 @@ def nguon_cua_dieu(ma_phap_dien: str) -> dict:
 
 
 @mcp.tool()
-def xem_van_ban_goc(so_hieu: str, day_du: bool = False) -> dict:
+def xem_van_ban_goc(so_hieu: str, day_du: bool = False, loai: str = None) -> dict:
     """Xem VĂN BẢN GỐC theo số hiệu (vd '91/2015/QH13', '155/2020/NĐ-CP'): metadata chính thức
     (cơ quan ban hành, ngày ban hành/hiệu lực, người ký) + TOÀN VĂN từ Công báo Chính phủ.
+    LƯU Ý: số hiệu KHÔNG duy nhất — cùng '91/2015/QH13' có cả Luật (Bộ luật Dân sự) lẫn Nghị quyết.
+    Nếu trùng, tool trả danh sách; chọn bằng loai='Luật' | 'Nghị quyết' | 'Nghị định'…
     Mặc định cắt ~15.000 ký tự; day_du=True lấy trọn."""
-    rows = query("""SELECT so_hieu, loai_vb, ten_van_ban, co_quan_ban_hanh, nguoi_ky,
+    cond, params = "", [_norm_sh(so_hieu)]
+    if loai:
+        cond = " AND loai_chuan = lower(unaccent(%s))"; params.append(
+            "Luật" if re.sub(r"\s+", " ", (loai or "").strip().lower()).startswith("bộ luật") else loai)
+    rows = query(f"""SELECT so_hieu, loai_vb, loai_chuan, ten_van_ban, co_quan_ban_hanh, nguoi_ky,
                     ngay_ban_hanh, ngay_hieu_luc, so_cong_bao, url_congbao, trich_xuat, toan_van
-                    FROM van_ban WHERE translate(upper(so_hieu),'Đ','D') = %s""", (_norm_sh(so_hieu),))
+                    FROM van_ban WHERE translate(upper(so_hieu),'Đ','D') = %s{cond}""", tuple(params))
+    if len(rows) > 1:
+        return {"canh_bao": f"Số hiệu '{so_hieu}' ứng với {len(rows)} văn bản KHÁC LOẠI — chọn bằng tham số loai:",
+                "ung_vien": [{"loai_vb": r["loai_vb"], "ten_van_ban": r["ten_van_ban"],
+                              "goi_lai": f"xem_van_ban_goc('{so_hieu}', loai='{r['loai_vb']}')"} for r in rows]}
     if not rows:
         return {"error": "Không có văn bản này trong kho",
                 "goi_y": "Kho gồm ~3.250 văn bản từ Công báo (2010+). Văn bản cũ hơn: tra vbpl.vn hoặc nguon_cua_dieu."}
