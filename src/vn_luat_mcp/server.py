@@ -383,12 +383,19 @@ def thong_ke(loai: str = "tong_quan", nhom_theo: str = None) -> dict:
     al = query("SELECT count(*) AS c FROM an_le_chinh_thuc")[0]["c"]
     try:
         vb = query("SELECT count(*) AS c FROM van_ban WHERE toan_van IS NOT NULL")[0]["c"]
+        tg = query("""SELECT chu_de_tu_gom AS chu_de, count(*) AS so_vb FROM van_ban
+                      WHERE chu_de_tu_gom IS NOT NULL GROUP BY 1 ORDER BY 1""")
     except Exception:
-        vb = 0
-    return {"dieu_luat": dl, "chu_de": cd, "ban_an": ba, "an_le_chinh_thuc": al,
-            "van_ban_goc": vb,
-            "ghi_chu": "an_le_chinh_thuc = 90 án lệ chính thức; ban_an = bản án minh họa; "
-                       "van_ban_goc = văn bản gốc toàn văn từ Công báo."}
+        vb, tg = 0, []
+    kq = {"dieu_luat": dl, "chu_de": cd, "ban_an": ba, "an_le_chinh_thuc": al, "van_ban_goc": vb,
+          "ghi_chu": "an_le_chinh_thuc = 90 án lệ chính thức; ban_an = bản án minh họa; "
+                     "van_ban_goc = văn bản gốc toàn văn từ Công báo."}
+    if tg:
+        kq["nhom_chua_phap_dien_hoa"] = tg
+        kq["luu_y"] = ("Chủ đề 11 (Đất đai) và 29 (Thi đua, khen thưởng) CHƯA có trong Bộ Pháp Điển "
+                       "→ tra_luat/tim_ngu_nghia sẽ KHÔNG tìm ra. Dùng "
+                       "tra_van_ban(tu_khoa, chu_de='Đất đai') để tra hai lĩnh vực này.")
+    return kq
 
 
 # ──────────── KHO VĂN BẢN GỐC (Công báo Chính phủ) ────────────
@@ -474,21 +481,28 @@ def xem_van_ban_goc(so_hieu: str, day_du: bool = False, loai: str = None) -> dic
 
 
 @mcp.tool()
-def tra_van_ban(tu_khoa: str, gioi_han: int = 10, offset: int = 0, loai: str = None) -> dict:
+def tra_van_ban(tu_khoa: str, gioi_han: int = 10, offset: int = 0,
+                loai: str = None, chu_de: str = None) -> dict:
     """Tìm trong TOÀN VĂN văn bản gốc (Công báo). Chạm được phần pháp điển LƯỢC BỎ:
     căn cứ ban hành, lời nói đầu, phụ lục, biểu mẫu, điều khoản chuyển tiếp/thi hành.
     loai (tùy chọn): lọc theo loại vd 'Nghị định', 'Thông tư', 'Luật'.
+    chu_de (tùy chọn): lọc nhóm CHƯA được pháp điển hóa — 'Đất đai' | 'Thi đua'.
+      ⚠ Hai lĩnh vực này KHÔNG có trong pháp điển (chủ đề 11, 29 Bộ Tư pháp chưa công bố),
+      nên tra_luat/tim_ngu_nghia KHÔNG tìm ra. Muốn tra đất đai → DÙNG TOOL NÀY với chu_de='Đất đai'.
     Khác tra_luat (tra điều đã pháp điển hóa) — dùng khi cần bản gốc đầy đủ."""
     gioi_han = max(1, min(int(gioi_han), 50)); offset = max(0, int(offset))
     cond, params = "", [tu_khoa, tu_khoa, tu_khoa]
     if loai:
-        cond = " AND unaccent(loai_vb) ILIKE unaccent(%s)"; params.append("%" + loai + "%")
+        cond += " AND unaccent(loai_vb) ILIKE unaccent(%s)"; params.append("%" + loai + "%")
+    if chu_de:
+        cond += " AND unaccent(chu_de_tu_gom) ILIKE unaccent(%s)"; params.append("%" + chu_de + "%")
     params += [gioi_han, offset]
     rows = query(f"""
         SELECT count(*) OVER() AS _total,
                round(ts_rank_cd({_RANK_W}, search_vector,
                      plainto_tsquery('vi_unaccent', %s))::numeric, 4)::float8 AS diem,
                so_hieu, loai_vb, ten_van_ban, co_quan_ban_hanh, ngay_hieu_luc::text AS ngay_hieu_luc,
+               chu_de_tu_gom, canh_bao_metadata,
                ts_headline('vi_unaccent', left(coalesce(toan_van,''), 400000),
                     plainto_tsquery('vi_unaccent', %s),
                     'StartSel=«, StopSel=», MaxFragments=2, MaxWords=30, MinWords=12') AS trich_doan
