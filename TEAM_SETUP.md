@@ -15,8 +15,12 @@ không thể sửa hay xoá gì.
 | Bản án minh họa | 1.963 |
 | Văn bản gốc (Công báo) | 3.268 |
 
-Người quản trị sẽ gửi bạn **2 thứ**: (1) mật khẩu tài khoản chỉ-đọc `mcp_ro`, (2) lời mời
-Tailscale chia sẻ máy chủ. Link repo này là công khai.
+Người quản trị sẽ gửi bạn **3 thứ**: (1) **tên tài khoản riêng của bạn** (dạng `luat_ro_<tên>`),
+(2) **mật khẩu** của tài khoản đó, (3) lời mời Tailscale chia sẻ máy chủ. Link repo này là công khai.
+
+> Mỗi thành viên có **tài khoản riêng**, không dùng chung. Nhờ vậy quản trị thu hồi được từng
+> người mà không ảnh hưởng ai khác. **Đừng chia sẻ tài khoản của bạn cho người khác** — nếu
+> có người mới, báo quản trị cấp tài khoản mới.
 
 ---
 
@@ -72,7 +76,8 @@ Ghi lại đường dẫn mà `where.exe uvx` in ra (thường là
 
 2. Mở `claude_desktop_config.json` bằng Notepad. *Nếu chưa có*, tạo file mới đúng tên đó.
 
-3. Dán nội dung dưới đây. **Thay 2 chỗ**: đường dẫn `uvx.exe` (bước 2) và `MAT_KHAU_DUOC_CAP`.
+3. Dán nội dung dưới đây. **Thay 3 chỗ**: đường dẫn `uvx.exe` (bước 2), `TEN_TAI_KHOAN_CUA_BAN`
+   và `MAT_KHAU_DUOC_CAP` (quản trị gửi).
 
 ```json
 {
@@ -88,7 +93,7 @@ Ghi lại đường dẫn mà `where.exe uvx` in ra (thường là
         "PGHOST": "100.85.147.69",
         "PGPORT": "5432",
         "PGDATABASE": "appdb",
-        "PGUSER": "mcp_ro",
+        "PGUSER": "TEN_TAI_KHOAN_CUA_BAN",
         "PGPASSWORD": "MAT_KHAU_DUOC_CAP",
         "E5_URL": "http://100.85.147.69:8899"
       }
@@ -96,6 +101,9 @@ Ghi lại đường dẫn mà `where.exe uvx` in ra (thường là
   }
 }
 ```
+
+> `PGUSER` là tên tài khoản **riêng** quản trị cấp cho bạn (vd `luat_ro_an`), **không phải**
+> `mcp_ro` — đó là tài khoản của quản trị.
 
 > **Đường dẫn Windows phải dùng hai gạch chéo ngược** `\\` như ví dụ.
 > Nếu file đã có sẵn mục `mcpServers`, chỉ thêm khối `"luat": {...}` vào trong — đừng ghi đè cả file.
@@ -173,11 +181,14 @@ khen thưởng 2022 + nghị định + thông tư hướng dẫn.
 |---|---|
 | Claude không thấy tool nào | Sai đường dẫn `uvx.exe` hoặc JSON sai cú pháp. Kiểm lại `where.exe uvx` và dấu `\\`. Thoát hẳn Claude rồi mở lại. |
 | Báo **timeout** khi tra | Máy chủ đang tắt hoặc Tailscale rớt. Thử `ping 100.85.147.69`. |
-| **password authentication failed** | Sai mật khẩu `mcp_ro` — hỏi lại quản trị. Sửa xong phải **thoát hẳn** Claude rồi mở lại. |
+| **password authentication failed** | Sai `PGUSER` hoặc `PGPASSWORD` — kiểm lại tên tài khoản quản trị cấp (không phải `mcp_ro`). Sửa xong phải **thoát hẳn** Claude rồi mở lại. |
 | **connection refused / no pg_hba entry** | Máy chủ chưa cho phép IP của bạn — báo quản trị mở `pg_hba.conf` cho dải Tailscale. |
 | `tim_ngu_nghia` báo không gọi được service nhúng | Dịch vụ tìm-theo-nghĩa trên máy chủ đang tắt. Báo quản trị; các tool khác vẫn dùng bình thường. |
 | Lần đầu chạy hơi lâu | `uvx` đang tải mã nguồn từ GitHub — bình thường, lần sau nhanh. |
 
-**Bảo mật:** mật khẩu `mcp_ro` nằm trong file cấu hình dạng văn bản thường. Đừng chia sẻ file này
-hoặc chụp màn hình có mật khẩu. Tài khoản này chỉ **đọc được dữ liệu luật**, không đọc được dữ
-liệu khác trên máy chủ và không sửa/xoá được gì.
+**Bảo mật:** mật khẩu nằm trong file cấu hình dạng văn bản thường. Đừng chia sẻ file này hoặc
+chụp màn hình có mật khẩu. Tài khoản của bạn chỉ **đọc được dữ liệu luật** — không đọc được
+database khác trên máy chủ, không sửa/xoá được gì.
+
+Nếu nghi mật khẩu bị lộ, báo quản trị: họ đổi mật khẩu **riêng tài khoản của bạn**, các thành
+viên khác không bị ảnh hưởng.
