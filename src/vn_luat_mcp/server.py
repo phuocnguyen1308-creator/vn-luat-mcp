@@ -6,7 +6,38 @@ import re, os, json, urllib.request
 from mcp.server.fastmcp import FastMCP
 from .db import query
 
-mcp = FastMCP("luat")
+# ─────────────────── SỔ TAY TƯ DUY cho MỌI AI dùng connector này ───────────────────
+# Đây là cách "suy nghĩ chủ động về hiệu lực" — host đưa cho model mỗi phiên, nên
+# mọi thành viên (kể cả AI của người khác) đều tự áp dụng, không cần ai nhắc.
+_HUONG_DAN = """\
+Connector "luat": tra cứu pháp luật Việt Nam (≈108k điều luật, 5.8k văn bản gốc, 90 án lệ).
+LUÔN suy nghĩ chủ động về HIỆU LỰC trước khi trích dẫn — đừng đưa kết quả thô cho người dùng:
+
+1. KIỂM NGÀY HIỆU LỰC. Mỗi kết quả có ngày ban hành/hiệu lực. So với hôm nay: nếu luật
+   chưa tới ngày hiệu lực, hoặc đã bị thay, thì KHÔNG dùng làm căn cứ hiện hành.
+
+2. KẾT QUẢ LÀ "NGUYÊN VĂN BAN HÀNH", KHÔNG PHẢI BẢN HỢP NHẤT. Điều mang nhãn [GỐC]
+   (mã pháp điển rỗng) là bản lúc ban hành, có thể đã bị sửa. Thấy "⚠ đã sửa đổi" /
+   "⚠N VB SỬA ĐỔI" thì PHẢI đối chiếu, đừng trích thẳng.
+
+3. PHÁP ĐIỂN LÀ ẢNH CHỤP (~05/2026). Với văn bản 2025–2026, ưu tiên lớp văn bản gốc
+   (tra_van_ban) hơn pháp điển; hai lớp có thể khác phiên bản.
+
+4. LUẬT MỚI CÓ THỂ PHỦ TOÀN LĨNH VỰC mà không nêu số hiệu văn bản cũ (vd Luật Bảo vệ
+   dữ liệu cá nhân 2025 làm Nghị định 13/2023 hết hiệu lực). Hệ thống KHÔNG tự phát
+   hiện loại này — khi thấy nghị định cũ và luật mới cùng lĩnh vực, hãy TỰ suy luận
+   và cảnh báo người dùng.
+
+5. CHỐT HIỆU LỰC CUỐI CÙNG = vbpl.vn. Kho giúp thấy CẦN KIỂM chỗ nào; với dẫn chứng
+   pháp lý quan trọng, nhắc người dùng tra vbpl.vn để xác nhận còn hiệu lực.
+
+6. ĐẤT ĐAI và THI ĐUA–KHEN THƯỞNG chưa có trong pháp điển → dùng tra_van_ban, KHÔNG
+   dùng tra_luat/tim_ngu_nghia cho hai lĩnh vực này.
+
+7. Trích dẫn LUÔN kèm SỐ HIỆU + NGÀY để người dùng tự kiểm chứng được.
+"""
+
+mcp = FastMCP("luat", instructions=_HUONG_DAN)
 
 SOURCE_URL = ("'https://phapdien.moj.gov.vn/TraCuuPhapDien/ViewBoPD.aspx?obj=&demucid=' "
               "|| a.subject_id || '&mapc=1' || a.article_anchor")
